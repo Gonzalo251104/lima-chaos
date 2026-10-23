@@ -1,11 +1,12 @@
 import Phaser from 'phaser';
+import { ChichaAudioSynth } from '../core/ChichaAudioSynth';
+import { VehicleAgent } from '../simulation/entities/VehicleAgent';
 import {
   LevelData,
   RoadEdge,
   RouteDefinition,
   VehicleArchetype,
 } from '../simulation/graph/GraphTypes';
-import { VehicleAgent } from '../simulation/entities/VehicleAgent';
 import { WorldSimulation } from '../simulation/WorldSimulation';
 import {
   getCongestionHeatmapColor,
@@ -29,12 +30,15 @@ interface StopVisualBundle {
 /**
  * Renders the Lima avenue road network, dynamic congestion heatmaps (Green -> Yellow -> Deep Red),
  * BusStopNode passenger queues with shrinking patience rings, traffic lights, ATU checkpoints,
- * Rival AI Combis, and interactive drag-to-connect route painting.
+ * Rival AI Combis, interactive drag-to-connect route painting, and Phase 4 visual/audio "Juice"
+ * (floating fare texts, horn honk shockwaves, and ATU fine camera screen shake).
  */
 export class CityMapScene extends Phaser.Scene {
   private simulation!: WorldSimulation;
   private routePainter!: RoutePainter;
+  private audioSynth!: ChichaAudioSynth;
   private speedMultiplier: number = 1;
+  private jamShockwaveCooldownMs: number = 0;
 
   private roadGraphics!: Phaser.GameObjects.Graphics;
   private routeGraphics!: Phaser.GameObjects.Graphics;
@@ -43,6 +47,7 @@ export class CityMapScene extends Phaser.Scene {
   private readonly stopVisuals: Map<string, StopVisualBundle> = new Map();
   private readonly vehicleVisuals: Map<string, VehicleVisualBundle> = new Map();
   private readonly atuLabels: Map<string, Phaser.GameObjects.Text> = new Map();
+  private eventUnsubscribers: Array<() => void> = [];
 
   constructor() {
     super({ key: 'CityMapScene' });
@@ -55,11 +60,14 @@ export class CityMapScene extends Phaser.Scene {
       (this.registry.get('level:javier_prado') as LevelData);
     const vehiclesData = this.registry.get('vehiclesData') as VehicleArchetype[];
 
+    this.cleanupListeners();
     this.stopVisuals.clear();
     this.vehicleVisuals.clear();
     this.atuLabels.clear();
     this.speedMultiplier = 1;
+    this.jamShockwaveCooldownMs = 0;
 
+    this.audioSynth = new ChichaAudioSynth();
     this.simulation = new WorldSimulation({
       levelData,
       seed: 2026,
@@ -76,12 +84,19 @@ export class CityMapScene extends Phaser.Scene {
     this.setupInitialRoutesAndFleet(levelData, vehiclesData);
     this.createNodeVisuals();
     this.setupPointerRoutePainting();
+    this.setupJuiceEventListeners();
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.cleanupListeners();
+      this.audioSynth.stopChichaLoop();
+    });
 
     // Launch HUD overlay scene in parallel
     this.scene.launch('HudScene', {
       simulation: this.simulation,
       routePainter: this.routePainter,
       cityScene: this,
+      audioSynth: this.audioSynth,
     });
   }
 
@@ -89,6 +104,7 @@ export class CityMapScene extends Phaser.Scene {
     if (this.speedMultiplier > 0 && !this.simulation.clock.isDayOver()) {
       const scaledDelta = Math.min(deltaMs, 100) * this.speedMultiplier;
       this.simulation.tick(scaledDelta);
+      this.updateTrafficJamShockwaves(deltaMs);
     }
 
     this.renderRoadNetwork();
@@ -106,6 +122,137 @@ export class CityMapScene extends Phaser.Scene {
 
   public getSimulation(): WorldSimulation {
     return this.simulation;
+  }
+
+  private cleanupListeners(): void {
+    for (const unsub of this.eventUnsubscribers) {
+      unsub();
+    }
+    this.eventUnsubscribers = [];
+  }
+
+  /**
+   * Subscribes to simulation events to trigger visual and audio "Juice":
+   * - Floating "+S/ 1.50" fare popups + coin chime on boarding
+   * - Expanding horn honk shockwave rings + combi horn on "Correteo"
+   * - Camera screen shake + "-S/ 120.00" floating alert + whistle on ATU fine
+   */
+  private setupJuiceEventListeners(): void {
+    this.eventUnsubscribers.push(
+      this.simulation.eventBus.on(
+        'passenger:boarded',
+        ({ vehicleId, stopId, farePaid }) => {
+          const vehicle = this.simulation.getVehicle(vehicleId);
+          if (!vehicle || !vehicle.isPlayerOwned) {
+            return;
+          }
+          const stopNode = this.simulation.graph.getNode(stopId);
+          if (stopNode) {
+            this.spawnFloatingText(
+              stopNode.x + (Math.random() * 24 - 12),
+              stopNode.y - 26,
+              `+S/ ${farePaid.toFixed(2)}`,
+              '#4ade80',
+            );
+          }
+          this.audioSynth.playCoinChime();
+        },
+      ),
+    );
+
+    this.eventUnsubscribers.push(
+      this.simulation.eventBus.on('vehicle:correteo-started', ({ vehicleId }) => {
+        const vehicle = this.simulation.getVehicle(vehicleId);
+        if (!vehicle) {
+          return;
+        }
+        const pos = this.computeVehicleScreenTransform(vehicle);
+        this.spawnHornShockwave(pos.x, pos.y, 0xfbbf24);
+        this.audioSynth.playHornHonk();
+      }),
+    );
+
+    this.eventUnsubscribers.push(
+      this.simulation.eventBus.on('atu:fine-issued', ({ edgeId, amount }) => {
+        this.cameras.main.shake(280, 0.009);
+        this.audioSynth.playAtuWhistle();
+
+        const edge = this.simulation.graph.getEdge(edgeId);
+        if (edge) {
+          const pts = this.getEdgeLaneEndpoints(edge);
+          this.spawnFloatingText(
+            pts.midX,
+            pts.midY - 32,
+            `-S/ ${amount.toFixed(2)} ¡MULTA ATU!`,
+            '#f87171',
+            15,
+          );
+        }
+      }),
+    );
+  }
+
+  private updateTrafficJamShockwaves(deltaMs: number): void {
+    this.jamShockwaveCooldownMs -= deltaMs;
+    if (this.jamShockwaveCooldownMs > 0) {
+      return;
+    }
+    for (const edge of this.simulation.graph.getAllEdges()) {
+      const ratio = this.simulation.graph.getEdgeCongestionRatio(edge.id);
+      if (ratio >= 0.35) {
+        const pts = this.getEdgeLaneEndpoints(edge);
+        this.spawnHornShockwave(pts.midX, pts.midY, 0xef4444);
+        this.audioSynth.playHornHonk();
+        this.jamShockwaveCooldownMs = 1800;
+        break;
+      }
+    }
+  }
+
+  private spawnFloatingText(
+    x: number,
+    y: number,
+    message: string,
+    color: string,
+    fontSizePx: number = 13,
+  ): void {
+    const txt = this.add
+      .text(x, y, message, {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: `${fontSizePx}px`,
+        fontStyle: 'bold',
+        color,
+        stroke: '#030712',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(120);
+
+    this.tweens.add({
+      targets: txt,
+      y: y - 34,
+      alpha: 0,
+      duration: 800,
+      ease: 'Cubic.easeOut',
+      onComplete: () => txt.destroy(),
+    });
+  }
+
+  private spawnHornShockwave(x: number, y: number, colorInt: number): void {
+    const ring = this.add
+      .circle(x, y, 8)
+      .setStrokeStyle(2.5, colorInt, 0.95)
+      .setFillStyle(colorInt, 0.1)
+      .setDepth(95);
+
+    this.tweens.add({
+      targets: ring,
+      scale: 4.2,
+      alpha: 0,
+      duration: 550,
+      ease: 'Quad.easeOut',
+      onComplete: () => ring.destroy(),
+    });
   }
 
   private drawBackgroundGrid(): void {
@@ -135,7 +282,6 @@ export class CityMapScene extends Phaser.Scene {
       return;
     }
 
-    // Build bidirectional stop sequence across all stops
     const roundTripStops = [...stopIds];
     for (let i = stopIds.length - 2; i >= 0; i--) {
       roundTripStops.push(stopIds[i]!);
@@ -187,11 +333,10 @@ export class CityMapScene extends Phaser.Scene {
           .setInteractive({ useHandCursor: true })
           .setDepth(35);
 
-        const iconText = this.add
+        this.add
           .text(node.x, node.y, '🚏', { fontSize: '18px' })
           .setOrigin(0.5)
           .setDepth(36);
-        void iconText;
 
         const nameLabel = this.add
           .text(node.x, node.y + 38, node.name, {
@@ -215,6 +360,7 @@ export class CityMapScene extends Phaser.Scene {
           .setDepth(36);
 
         hitCircle.on('pointerdown', () => {
+          this.audioSynth.startChichaLoop();
           this.routePainter.startPaintingAtStop(node.id);
         });
 
@@ -251,6 +397,10 @@ export class CityMapScene extends Phaser.Scene {
   }
 
   private setupPointerRoutePainting(): void {
+    this.input.on('pointerdown', () => {
+      this.audioSynth.startChichaLoop();
+    });
+
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
       if (this.routePainter.getIsPainting()) {
         this.routePainter.updatePointerPosition(pointer.worldX, pointer.worldY);
@@ -264,10 +414,6 @@ export class CityMapScene extends Phaser.Scene {
     });
   }
 
-  /**
-   * Computes lane-offset start and end coordinates for a directed road edge
-   * so main avenues, return avenues, and auxiliary bypass roads are clearly separated visually.
-   */
   private getEdgeLaneEndpoints(edge: RoadEdge): {
     x1: number;
     y1: number;
@@ -559,6 +705,9 @@ export class CityMapScene extends Phaser.Scene {
       sprite.setInteractive({ useHandCursor: true });
       sprite.on('pointerdown', () => {
         vehicle.setCorreteoEnabled(!vehicle.isCorreteoEnabled());
+        const pos = this.computeVehicleScreenTransform(vehicle);
+        this.spawnHornShockwave(pos.x, pos.y, 0xfbbf24);
+        this.audioSynth.playHornHonk();
       });
     }
 

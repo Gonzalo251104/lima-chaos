@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { ChichaAudioSynth } from '../core/ChichaAudioSynth';
 import { VehicleArchetype } from '../simulation/graph/GraphTypes';
 import { WorldSimulation } from '../simulation/WorldSimulation';
 import { DailyReportModal } from '../ui/DailyReportModal';
@@ -10,17 +11,20 @@ interface HudSceneInitData {
   simulation: WorldSimulation;
   routePainter: RoutePainter;
   cityScene: CityMapScene;
+  audioSynth: ChichaAudioSynth;
 }
 
 /**
  * Parallel HUD overlay scene displaying cashflow, GameClock, Rush Hour status,
- * simulation speed controls (0x, 1x, 2x, 4x), transit line editor controls,
- * FleetModal shop/upgrades trigger, "Correteo" fleet toggle, and DailyReportModal.
+ * simulation speed controls (0x, 1x, 2x, 4x), Chicha 8-bit synth mute toggle,
+ * transit line editor controls, FleetModal shop/upgrades trigger, "Correteo" fleet toggle,
+ * and DailyReportModal.
  */
 export class HudScene extends Phaser.Scene {
   private simulation!: WorldSimulation;
   private routePainter!: RoutePainter;
   private cityScene!: CityMapScene;
+  private audioSynth!: ChichaAudioSynth;
   private dailyReportModal!: DailyReportModal;
   private fleetModal!: FleetModal;
 
@@ -31,6 +35,7 @@ export class HudScene extends Phaser.Scene {
   private activeLineText!: Phaser.GameObjects.Text;
   private evadeBtnLabel!: Phaser.GameObjects.Text;
   private correteoBtnLabel!: Phaser.GameObjects.Text;
+  private audioBtnLabel!: Phaser.GameObjects.Text;
   private fleetAssignText!: Phaser.GameObjects.Text;
 
   private fleetCorreteoActive: boolean = false;
@@ -44,6 +49,7 @@ export class HudScene extends Phaser.Scene {
     this.simulation = data.simulation;
     this.routePainter = data.routePainter;
     this.cityScene = data.cityScene;
+    this.audioSynth = data.audioSynth;
     this.dailyReportModal = new DailyReportModal(this);
     this.fleetModal = new FleetModal(this);
     this.fleetCorreteoActive = false;
@@ -135,7 +141,7 @@ export class HudScene extends Phaser.Scene {
       .setOrigin(0, 0.5);
 
     this.clockText = this.add
-      .text(width / 2 - 40, 20, '🗓️ Día 1  |  🕒 05:00', {
+      .text(width / 2 - 60, 20, '🗓️ Día 1  |  🕒 05:00', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '17px',
         fontStyle: 'bold',
@@ -144,7 +150,7 @@ export class HudScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.rushHourBadge = this.add
-      .text(width / 2 - 40, 41, '🔥 ¡HORA PUNTA! Demanda x2.25', {
+      .text(width / 2 - 60, 41, '🔥 ¡HORA PUNTA! Demanda x2.25', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '11px',
         fontStyle: 'bold',
@@ -155,6 +161,26 @@ export class HudScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setVisible(false);
 
+    // 8-bit Chicha Audio Mute Toggle Button
+    const audioBtn = this.add
+      .rectangle(width - 415, 28, 108, 30, 0x1e293b)
+      .setStrokeStyle(1, 0xa855f7)
+      .setInteractive({ useHandCursor: true });
+
+    this.audioBtnLabel = this.add
+      .text(width - 415, 28, '🔊 Chicha: ON', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '11px',
+        fontStyle: 'bold',
+        color: '#e9d5ff',
+      })
+      .setOrigin(0.5);
+
+    audioBtn.on('pointerdown', () => {
+      const muted = this.audioSynth.toggleMute();
+      this.audioBtnLabel.setText(muted ? '🔇 Chicha: OFF' : '🔊 Chicha: ON');
+    });
+
     const speeds: Array<{ label: string; mult: number }> = [
       { label: '⏸ 0x', mult: 0 },
       { label: '▶ 1x', mult: 1 },
@@ -163,9 +189,9 @@ export class HudScene extends Phaser.Scene {
     ];
 
     speeds.forEach((spd, idx) => {
-      const bx = width - 310 + idx * 58;
+      const bx = width - 315 + idx * 56;
       const btn = this.add
-        .rectangle(bx, 28, 52, 30, 0x1e293b)
+        .rectangle(bx, 28, 50, 30, 0x1e293b)
         .setStrokeStyle(1, 0x475569)
         .setInteractive({ useHandCursor: true });
 
@@ -201,6 +227,7 @@ export class HudScene extends Phaser.Scene {
       if (this.unsubscribeDayEnded) {
         this.unsubscribeDayEnded();
       }
+      this.audioSynth.stopChichaLoop();
       this.scene.stop('CityMapScene');
       this.scene.start('MainMenuScene');
     });
@@ -253,7 +280,6 @@ export class HudScene extends Phaser.Scene {
       });
     });
 
-    // Fleet & Upgrades Modal Button ("Sindicato / Comprar")
     const fleetBtn = this.add
       .rectangle(620, barY - 1, 175, 26, 0x065f46)
       .setStrokeStyle(1.5, 0x34d399)
@@ -273,7 +299,6 @@ export class HudScene extends Phaser.Scene {
       this.fleetModal.show(this.simulation, this.routePainter, archetypes);
     });
 
-    // Fleet-wide "Correteo" Toggle Button
     const correteoBtn = this.add
       .rectangle(795, barY - 1, 155, 26, 0x78350f)
       .setStrokeStyle(1, 0xfbbf24)
@@ -291,9 +316,9 @@ export class HudScene extends Phaser.Scene {
     correteoBtn.on('pointerdown', () => {
       this.fleetCorreteoActive = !this.fleetCorreteoActive;
       this.simulation.setFleetCorreteo(this.fleetCorreteoActive);
+      this.audioSynth.playHornHonk();
     });
 
-    // Toggle Evade ATU button
     const evadeBtn = this.add
       .rectangle(965, barY - 1, 165, 26, 0x1e293b)
       .setStrokeStyle(1, 0x38bdf8)
@@ -312,7 +337,6 @@ export class HudScene extends Phaser.Scene {
       this.routePainter.toggleEvadeAtu();
     });
 
-    // Spawn/Toggle ATU checkpoint on main avenue
     const atuTestBtn = this.add
       .rectangle(1155, barY - 1, 190, 26, 0x7f1d1d)
       .setStrokeStyle(1, 0xef4444)
@@ -336,6 +360,7 @@ export class HudScene extends Phaser.Scene {
           this.simulation.clearAtuCheckpoint(mainEdge.id);
         } else {
           this.simulation.spawnAtuCheckpoint(mainEdge.id, 180);
+          this.audioSynth.playAtuWhistle();
         }
       }
     });
