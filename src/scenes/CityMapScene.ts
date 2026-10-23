@@ -29,7 +29,7 @@ interface StopVisualBundle {
 /**
  * Renders the Lima avenue road network, dynamic congestion heatmaps (Green -> Yellow -> Deep Red),
  * BusStopNode passenger queues with shrinking patience rings, traffic lights, ATU checkpoints,
- * and interactive drag-to-connect route painting.
+ * Rival AI Combis, and interactive drag-to-connect route painting.
  */
 export class CityMapScene extends Phaser.Scene {
   private simulation!: WorldSimulation;
@@ -64,6 +64,7 @@ export class CityMapScene extends Phaser.Scene {
       levelData,
       seed: 2026,
       gameMinutesPerRealSecond: 1.0,
+      enableDynamicAtuCheckpoints: true,
     });
     this.routePainter = new RoutePainter(this.simulation);
 
@@ -171,6 +172,10 @@ export class CityMapScene extends Phaser.Scene {
       route: defaultRoute,
       isPlayerOwned: true,
     });
+
+    // Spawn Rival AI Combis competing for the highest-demand stops
+    this.simulation.spawnRivalCombi(combi, 'rival_1');
+    this.simulation.spawnRivalCombi(combi, 'rival_2');
   }
 
   private createNodeVisuals(): void {
@@ -281,15 +286,14 @@ export class CityMapScene extends Phaser.Scene {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const len = Math.max(1, Math.hypot(dx, dy));
-    // Perpendicular unit normal
     const nx = -dy / len;
     const ny = dx / len;
 
-    let offsetPx = -12; // Main avenue forward lane
+    let offsetPx = -12;
     if (edge.isAuxiliary) {
-      offsetPx = -46; // Outer Vía Auxiliar bypass lane
+      offsetPx = -46;
     } else if (edge.id.includes('return')) {
-      offsetPx = 14; // Return lane
+      offsetPx = 14;
     }
 
     const x1 = from.x + nx * offsetPx;
@@ -317,15 +321,12 @@ export class CityMapScene extends Phaser.Scene {
       const heatColor = getCongestionHeatmapColor(congestionRatio);
       const roadWidth = edge.isAuxiliary ? 8 : 13;
 
-      // Asphalt base border
       this.roadGraphics.lineStyle(roadWidth + 4, 0x1e293b, 0.95);
       this.roadGraphics.lineBetween(pts.x1, pts.y1, pts.x2, pts.y2);
 
-      // Congestion heatmap lane fill (Green -> Yellow -> Deep Red)
       this.roadGraphics.lineStyle(roadWidth, heatColor, edge.isAuxiliary ? 0.72 : 0.9);
       this.roadGraphics.lineBetween(pts.x1, pts.y1, pts.x2, pts.y2);
 
-      // Direction arrow chevron at midpoint
       const arrowSize = 6;
       const ax1 = pts.midX - Math.cos(pts.angleRad - 0.5) * arrowSize;
       const ay1 = pts.midY - Math.sin(pts.angleRad - 0.5) * arrowSize;
@@ -335,7 +336,6 @@ export class CityMapScene extends Phaser.Scene {
       this.roadGraphics.lineBetween(ax1, ay1, pts.midX, pts.midY);
       this.roadGraphics.lineBetween(ax2, ay2, pts.midX, pts.midY);
 
-      // ATU checkpoint warning cones
       const hasAtu = this.simulation.graph.hasAtuCheckpoint(edge.id);
       if (hasAtu) {
         this.roadGraphics.fillStyle(0xf97316, 1);
@@ -373,7 +373,6 @@ export class CityMapScene extends Phaser.Scene {
   private renderRoutesAndPainterPreview(): void {
     this.routeGraphics.clear();
 
-    // 1. Render active registered routes
     const routes = this.simulation.getAllRoutes();
     routes.forEach((route, routeIdx) => {
       const colorInt = Phaser.Display.Color.HexStringToColor(route.color).color;
@@ -396,7 +395,6 @@ export class CityMapScene extends Phaser.Scene {
       }
     });
 
-    // 2. Render live RoutePainter drag preview
     if (this.routePainter.getIsPainting()) {
       const draftStops = this.routePainter.getDraftStopIds();
       const preset = this.routePainter.getActiveLinePreset();
@@ -425,7 +423,6 @@ export class CityMapScene extends Phaser.Scene {
   private renderDynamicEntities(): void {
     this.overlayGraphics.clear();
 
-    // 1. Render TrafficLight phases at intersections
     for (const node of this.simulation.graph.getAllNodes()) {
       if (node.type === 'INTERSECTION') {
         const light = this.simulation.getTrafficLight(node.id);
@@ -443,7 +440,6 @@ export class CityMapScene extends Phaser.Scene {
       }
     }
 
-    // 2. Render BusStopNode passenger dots & shrinking patience rings
     for (const stop of this.simulation.getAllBusStops()) {
       const visual = this.stopVisuals.get(stop.id);
       const queue = stop.getWaitingPassengers();
@@ -469,11 +465,9 @@ export class CityMapScene extends Phaser.Scene {
               ? 0xfacc15
               : 0xef4444;
 
-        // Passenger inner dot
         this.overlayGraphics.fillStyle(0xf8fafc, 1);
         this.overlayGraphics.fillCircle(px, py, 3.2);
 
-        // Shrinking patience ring arc
         this.overlayGraphics.lineStyle(2, ringColor, 0.95);
         this.overlayGraphics.beginPath();
         this.overlayGraphics.arc(
@@ -488,7 +482,6 @@ export class CityMapScene extends Phaser.Scene {
       }
     }
 
-    // 3. Render VehicleAgent sprites along offset road edges
     for (const vehicle of this.simulation.getAllVehicles()) {
       let bundle = this.vehicleVisuals.get(vehicle.id);
       if (!bundle) {
@@ -500,8 +493,13 @@ export class CityMapScene extends Phaser.Scene {
       bundle.container.setPosition(transform.x, transform.y);
       bundle.sprite.setRotation(transform.angleRad);
 
+      const prefix = vehicle.isPlayerOwned
+        ? vehicle.hasCobrador()
+          ? '🗣️ '
+          : ''
+        : '🏴‍☠️ RIVAL ';
       bundle.badgeText.setText(
-        `${vehicle.getPassengerCount()}/${vehicle.archetype.capacity}`,
+        `${prefix}${vehicle.getPassengerCount()}/${vehicle.archetype.capacity}`,
       );
 
       const state = vehicle.getStateName();
@@ -516,6 +514,10 @@ export class CityMapScene extends Phaser.Scene {
       } else if (state === 'INSPECTED') {
         bundle.stateLabel.setText('🚓 PAPELETA ATU');
         bundle.stateLabel.setColor('#f87171');
+        bundle.stateLabel.setVisible(true);
+      } else if (vehicle.isPlayerOwned && vehicle.isCorreteoEnabled()) {
+        bundle.stateLabel.setText('⚡ Correteo Listo');
+        bundle.stateLabel.setColor('#fde047');
         bundle.stateLabel.setVisible(true);
       } else {
         bundle.stateLabel.setVisible(false);
@@ -551,13 +553,22 @@ export class CityMapScene extends Phaser.Scene {
           : 'tex_combi_pirata';
 
     const sprite = this.add.image(0, 0, texKey);
+    if (!vehicle.isPlayerOwned) {
+      sprite.setTint(0xe879f9);
+    } else {
+      sprite.setInteractive({ useHandCursor: true });
+      sprite.on('pointerdown', () => {
+        vehicle.setCorreteoEnabled(!vehicle.isCorreteoEnabled());
+      });
+    }
+
     const badgeText = this.add
       .text(0, -18, `0/${vehicle.archetype.capacity}`, {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '11px',
         fontStyle: 'bold',
-        color: '#f8fafc',
-        backgroundColor: '#0f172ad9',
+        color: vehicle.isPlayerOwned ? '#f8fafc' : '#f5d0fe',
+        backgroundColor: vehicle.isPlayerOwned ? '#0f172ad9' : '#4a044ed9',
         padding: { x: 4, y: 1 },
       })
       .setOrigin(0.5);
