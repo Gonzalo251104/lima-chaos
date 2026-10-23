@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
+import { VehicleArchetype } from '../simulation/graph/GraphTypes';
 import { WorldSimulation } from '../simulation/WorldSimulation';
 import { DailyReportModal } from '../ui/DailyReportModal';
+import { FleetModal } from '../ui/FleetModal';
 import { RoutePainter, TRANSIT_LINE_PRESETS } from '../ui/RoutePainter';
 import { CityMapScene } from './CityMapScene';
 
@@ -13,13 +15,14 @@ interface HudSceneInitData {
 /**
  * Parallel HUD overlay scene displaying cashflow, GameClock, Rush Hour status,
  * simulation speed controls (0x, 1x, 2x, 4x), transit line editor controls,
- * and the end-of-day P&L summary modal.
+ * FleetModal shop/upgrades trigger, "Correteo" fleet toggle, and DailyReportModal.
  */
 export class HudScene extends Phaser.Scene {
   private simulation!: WorldSimulation;
   private routePainter!: RoutePainter;
   private cityScene!: CityMapScene;
   private dailyReportModal!: DailyReportModal;
+  private fleetModal!: FleetModal;
 
   private cashText!: Phaser.GameObjects.Text;
   private profitText!: Phaser.GameObjects.Text;
@@ -27,8 +30,10 @@ export class HudScene extends Phaser.Scene {
   private rushHourBadge!: Phaser.GameObjects.Text;
   private activeLineText!: Phaser.GameObjects.Text;
   private evadeBtnLabel!: Phaser.GameObjects.Text;
+  private correteoBtnLabel!: Phaser.GameObjects.Text;
   private fleetAssignText!: Phaser.GameObjects.Text;
 
+  private fleetCorreteoActive: boolean = false;
   private unsubscribeDayEnded: (() => void) | null = null;
 
   constructor() {
@@ -40,6 +45,8 @@ export class HudScene extends Phaser.Scene {
     this.routePainter = data.routePainter;
     this.cityScene = data.cityScene;
     this.dailyReportModal = new DailyReportModal(this);
+    this.fleetModal = new FleetModal(this);
+    this.fleetCorreteoActive = false;
 
     if (this.unsubscribeDayEnded) {
       this.unsubscribeDayEnded();
@@ -50,6 +57,7 @@ export class HudScene extends Phaser.Scene {
 
     this.unsubscribeDayEnded = this.simulation.eventBus.on('clock:day-ended', ({ dayNumber }) => {
       this.cityScene.setSimulationSpeed(0);
+      this.fleetModal.hide();
       this.dailyReportModal.show(
         dayNumber,
         this.simulation.getDailyReport(),
@@ -70,7 +78,7 @@ export class HudScene extends Phaser.Scene {
     const report = this.simulation.getDailyReport();
     this.cashText.setText(`💰 Caja: S/ ${this.simulation.economy.getCash().toFixed(2)}`);
     this.profitText.setText(
-      `📈 Neto Hoy: S/ ${report.netOperatingProfit.toFixed(2)} (Meta: S/ ${this.simulation.levelData.targetDailyProfit}) | Pasajeros: ${report.passengersServed}`,
+      `📈 Neto Hoy: S/ ${report.netOperatingProfit.toFixed(2)} (Meta: S/ ${this.simulation.levelData.targetDailyProfit}) | Pax: ${report.passengersServed} | Rivales: ${this.simulation.getRivalVehicles().length}`,
     );
 
     const dayNum = this.simulation.clock.getDayNumber();
@@ -89,15 +97,17 @@ export class HudScene extends Phaser.Scene {
     this.activeLineText.setColor(preset.colorHex);
 
     const evadeOn = this.routePainter.isEvadeAtuEnabled(preset.id);
-    this.evadeBtnLabel.setText(
-      `Evadir ATU (Auxiliar): ${evadeOn ? 'SÍ' : 'NO'}`,
+    this.evadeBtnLabel.setText(`Evadir ATU: ${evadeOn ? 'SÍ' : 'NO'}`);
+
+    this.correteoBtnLabel.setText(
+      `🔥 Correteo: ${this.fleetCorreteoActive ? 'ON' : 'OFF'}`,
     );
 
     const vehiclesSummary = this.simulation
-      .getAllVehicles()
-      .map((v) => `${v.id} → [${v.getRoute().name.split(':')[0]}]`)
-      .join('   |   ');
-    this.fleetAssignText.setText(`Flota Activa: ${vehiclesSummary}`);
+      .getPlayerVehicles()
+      .map((v) => `${v.id}${v.hasCobrador() ? '🗣️' : ''} → [${v.getRoute().name.split(':')[0]}]`)
+      .join('  |  ');
+    this.fleetAssignText.setText(`Tu Flota: ${vehiclesSummary}`);
   }
 
   private createTopBar(): void {
@@ -145,7 +155,6 @@ export class HudScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setVisible(false);
 
-    // Speed control buttons (0x, 1x, 2x, 4x)
     const speeds: Array<{ label: string; mult: number }> = [
       { label: '⏸ 0x', mult: 0 },
       { label: '▶ 1x', mult: 1 },
@@ -174,7 +183,6 @@ export class HudScene extends Phaser.Scene {
       });
     });
 
-    // Back to Main Menu button
     const menuBtn = this.add
       .rectangle(width - 48, 28, 72, 30, 0x334155)
       .setStrokeStyle(1, 0x64748b)
@@ -223,19 +231,18 @@ export class HudScene extends Phaser.Scene {
       })
       .setOrigin(0, 0.5);
 
-    // Transit Line selector buttons
     TRANSIT_LINE_PRESETS.forEach((preset, idx) => {
-      const bx = 95 + idx * 185;
+      const bx = 90 + idx * 170;
       const by = barY - 1;
       const btn = this.add
-        .rectangle(bx, by, 174, 26, 0x111827)
+        .rectangle(bx, by, 160, 26, 0x111827)
         .setStrokeStyle(1.5, preset.colorInt)
         .setInteractive({ useHandCursor: true });
 
       this.add
         .text(bx, by, preset.name, {
           fontFamily: 'system-ui, sans-serif',
-          fontSize: '12px',
+          fontSize: '11px',
           fontStyle: 'bold',
           color: preset.colorHex,
         })
@@ -246,14 +253,54 @@ export class HudScene extends Phaser.Scene {
       });
     });
 
-    // Assign all player vehicles to active line button
-    const assignBtn = this.add
-      .rectangle(680, barY - 1, 180, 26, 0x1e293b)
-      .setStrokeStyle(1, 0x38bdf8)
+    // Fleet & Upgrades Modal Button ("Sindicato / Comprar")
+    const fleetBtn = this.add
+      .rectangle(620, barY - 1, 175, 26, 0x065f46)
+      .setStrokeStyle(1.5, 0x34d399)
       .setInteractive({ useHandCursor: true });
 
     this.add
-      .text(680, barY - 1, '🚐 Asignar Flota a Línea', {
+      .text(620, barY - 1, '🛒 Flota y Cobradores', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '11px',
+        fontStyle: 'bold',
+        color: '#ecfdf5',
+      })
+      .setOrigin(0.5);
+
+    fleetBtn.on('pointerdown', () => {
+      const archetypes = this.registry.get('vehiclesData') as VehicleArchetype[];
+      this.fleetModal.show(this.simulation, this.routePainter, archetypes);
+    });
+
+    // Fleet-wide "Correteo" Toggle Button
+    const correteoBtn = this.add
+      .rectangle(795, barY - 1, 155, 26, 0x78350f)
+      .setStrokeStyle(1, 0xfbbf24)
+      .setInteractive({ useHandCursor: true });
+
+    this.correteoBtnLabel = this.add
+      .text(795, barY - 1, '🔥 Correteo: OFF', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '11px',
+        fontStyle: 'bold',
+        color: '#fef08a',
+      })
+      .setOrigin(0.5);
+
+    correteoBtn.on('pointerdown', () => {
+      this.fleetCorreteoActive = !this.fleetCorreteoActive;
+      this.simulation.setFleetCorreteo(this.fleetCorreteoActive);
+    });
+
+    // Toggle Evade ATU button
+    const evadeBtn = this.add
+      .rectangle(965, barY - 1, 165, 26, 0x1e293b)
+      .setStrokeStyle(1, 0x38bdf8)
+      .setInteractive({ useHandCursor: true });
+
+    this.evadeBtnLabel = this.add
+      .text(965, barY - 1, 'Evadir ATU: SÍ', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '11px',
         fontStyle: 'bold',
@@ -261,40 +308,18 @@ export class HudScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    assignBtn.on('pointerdown', () => {
-      const lineId = this.routePainter.getActiveLinePreset().id;
-      for (const v of this.simulation.getAllVehicles()) {
-        this.routePainter.assignVehicleToRoute(v.id, lineId);
-      }
-    });
-
-    // Toggle Evade ATU button
-    const evadeBtn = this.add
-      .rectangle(895, barY - 1, 215, 26, 0x1e293b)
-      .setStrokeStyle(1, 0xfbbf24)
-      .setInteractive({ useHandCursor: true });
-
-    this.evadeBtnLabel = this.add
-      .text(895, barY - 1, 'Evadir ATU (Auxiliar): SÍ', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '11px',
-        fontStyle: 'bold',
-        color: '#fbbf24',
-      })
-      .setOrigin(0.5);
-
     evadeBtn.on('pointerdown', () => {
       this.routePainter.toggleEvadeAtu();
     });
 
-    // Spawn/Toggle ATU checkpoint on main avenue for testing/gameplay
+    // Spawn/Toggle ATU checkpoint on main avenue
     const atuTestBtn = this.add
-      .rectangle(1135, barY - 1, 220, 26, 0x7f1d1d)
+      .rectangle(1155, barY - 1, 190, 26, 0x7f1d1d)
       .setStrokeStyle(1, 0xef4444)
       .setInteractive({ useHandCursor: true });
 
     this.add
-      .text(1135, barY - 1, '🚨 Activar Operativo ATU', {
+      .text(1155, barY - 1, '🚨 Operativo ATU', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '11px',
         fontStyle: 'bold',
