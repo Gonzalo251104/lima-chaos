@@ -1,0 +1,123 @@
+{
+  "id": "javier_prado",
+  "name": "Eje Evitamiento - Javier Prado",
+  "startingCash": 500,
+  "targetDailyProfit": 350,
+  "nodes": [
+    {
+      "id": "puente_nuevo",
+      "name": "Puente Nuevo",
+      "type": "BUS_STOP",
+      "x": 120,
+      "y": 540,
+      "baseSpawnRatePerMin": 18
+    },
+    {
+      "id": "trebol_jp",
+      "name": "Trébol Javier Prado",
+      "type": "INTERSECTION",
+      "x": 380,
+      "y": 420,
+      "trafficLightCycleSec": 25
+    },
+    {
+      "id": "clinica_rp",
+      "name": "Clínica Ricardo Palma",
+      "type": "BUS_STOP",
+      "x": 640,
+      "y": 420,
+      "baseSpawnRatePerMin": 14
+    },
+    {
+      "id": "la_molina",
+      "name": "Óvalo La Molina",
+      "type": "BUS_STOP",
+      "x": 980,
+      "y": 420,
+      "baseSpawnRatePerMin": 12
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "puente_nuevo",
+      "to": "trebol_jp",
+      "lengthMeters": 1200,
+      "baseSpeedKmh": 45,
+      "capacity": 8,
+      "isAuxiliary": false
+    },
+    {
+      "id": "e1_aux",
+      "from": "puente_nuevo",
+      "to": "trebol_jp",
+      "lengthMeters": 1450,
+      "baseSpeedKmh": 35,
+      "capacity": 5,
+      "isAuxiliary": true
+    },
+    {
+      "id": "e2_main",
+      "from": "trebol_jp",
+      "to": "clinica_rp",
+      "lengthMeters": 1500,
+      "baseSpeedKmh": 50,
+      "capacity": 10,
+      "isAuxiliary": false
+    },
+    {
+      "id": "e2_aux",
+      "from": "trebol_jp",
+      "to": "clinica_rp",
+      "lengthMeters": 1750,
+      "baseSpeedKmh": 35,
+      "capacity": 5,
+      "isAuxiliary": true
+    },
+    {
+      "id": "e3_main",
+      "from": "clinica_rp",
+      "to": "la_molina",
+      "lengthMeters": 1800,
+      "baseSpeedKmh": 45,
+      "capacity": 8,
+      "isAuxiliary": false
+    },
+    {
+      "id": "e3_aux",
+      "from": "clinica_rp",
+      "to": "la_molina",
+      "lengthMeters": 2100,
+      "baseSpeedKmh": 32,
+      "capacity": 5,
+      "isAuxiliary": true
+    },
+    {
+      "id": "e3_return",
+      "from": "la_molina",
+      "to": "clinica_rp",
+      "lengthMeters": 1800,
+      "baseSpeedKmh": 45,
+      "capacity": 8,
+      "isAuxiliary": false
+    },
+    {
+      "id": "e2_return",
+      "from": "clinica_rp",
+      "to": "trebol_jp",
+      "lengthMeters": 1500,
+      "baseSpeedKmh": 50,
+      "capacity": 10,
+      "isAuxiliary": false
+    },
+    {
+      "id": "e1_return",
+      "from": "trebol_jp",
+      "to": "puente_nuevo",
+      "lengthMeters": 1200,
+      "baseSpeedKmh": 45,
+      "capacity": 8,
+      "isAuxiliary": false
+    }
+  ]
+}

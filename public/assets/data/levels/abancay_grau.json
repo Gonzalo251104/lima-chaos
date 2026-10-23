@@ -1,0 +1,105 @@
+{
+  "id": "abancay_grau",
+  "name": "Centro Histórico: Abancay - Grau",
+  "startingCash": 600,
+  "targetDailyProfit": 450,
+  "nodes": [
+    {
+      "id": "acho",
+      "name": "Plaza de Acho",
+      "type": "BUS_STOP",
+      "x": 200,
+      "y": 140,
+      "baseSpawnRatePerMin": 20
+    },
+    {
+      "id": "congreso",
+      "name": "Congreso / Av. Abancay",
+      "type": "INTERSECTION",
+      "x": 420,
+      "y": 300,
+      "trafficLightCycleSec": 30
+    },
+    {
+      "id": "mesa_redonda",
+      "name": "Mesa Redonda",
+      "type": "BUS_STOP",
+      "x": 580,
+      "y": 420,
+      "baseSpawnRatePerMin": 24
+    },
+    {
+      "id": "grau",
+      "name": "Estación Grau",
+      "type": "BUS_STOP",
+      "x": 860,
+      "y": 540,
+      "baseSpawnRatePerMin": 18
+    }
+  ],
+  "edges": [
+    {
+      "id": "ab_e1",
+      "from": "acho",
+      "to": "congreso",
+      "lengthMeters": 900,
+      "baseSpeedKmh": 35,
+      "capacity": 6,
+      "isAuxiliary": false
+    },
+    {
+      "id": "ab_e2_main",
+      "from": "congreso",
+      "to": "mesa_redonda",
+      "lengthMeters": 800,
+      "baseSpeedKmh": 30,
+      "capacity": 6,
+      "isAuxiliary": false
+    },
+    {
+      "id": "ab_e2_aux",
+      "from": "congreso",
+      "to": "mesa_redonda",
+      "lengthMeters": 1100,
+      "baseSpeedKmh": 25,
+      "capacity": 4,
+      "isAuxiliary": true
+    },
+    {
+      "id": "ab_e3_main",
+      "from": "mesa_redonda",
+      "to": "grau",
+      "lengthMeters": 1100,
+      "baseSpeedKmh": 38,
+      "capacity": 7,
+      "isAuxiliary": false
+    },
+    {
+      "id": "ab_e3_return",
+      "from": "grau",
+      "to": "mesa_redonda",
+      "lengthMeters": 1100,
+      "baseSpeedKmh": 38,
+      "capacity": 7,
+      "isAuxiliary": false
+    },
+    {
+      "id": "ab_e2_return",
+      "from": "mesa_redonda",
+      "to": "congreso",
+      "lengthMeters": 800,
+      "baseSpeedKmh": 30,
+      "capacity": 6,
+      "isAuxiliary": false
+    },
+    {
+      "id": "ab_e1_return",
+      "from": "congreso",
+      "to": "acho",
+      "lengthMeters": 900,
+      "baseSpeedKmh": 35,
+      "capacity": 6,
+      "isAuxiliary": false
+    }
+  ]
+}
