@@ -23,15 +23,20 @@ export interface WorldSimulationConfig {
   readonly seed?: number;
   readonly gameMinutesPerRealSecond?: number;
   readonly eventBus?: EventBus;
+  readonly enableDynamicAtuCheckpoints?: boolean;
 }
 
 /**
  * Top-level deterministic simulation orchestrator for LimaCaos: Combi Tycoon.
  * Coordinates GameClock, RoadGraph, Pathfinder, Passenger spawning, TrafficLights,
- * ATU Checkpoints, EconomyManager, and VehicleAgent FSMs.
+ * ATU Checkpoints, Rival AI Combis, EconomyManager, and VehicleAgent FSMs.
  * Pure TypeScript — zero Phaser dependencies.
  */
 export class WorldSimulation {
+  public static readonly COBRADOR_UPGRADE_COST = 150;
+  public static readonly ATU_CHECKPOINT_DURATION_MIN = 180; // 3 in-game hours
+  public static readonly ATU_SPAWN_INTERVAL_MIN = 210; // Checks every 3.5 in-game hours
+
   public readonly levelData: LevelData;
   public readonly eventBus: EventBus;
   public readonly random: Random;
@@ -48,7 +53,12 @@ export class WorldSimulation {
   private readonly activeAtuTimersMin: Map<string, number> = new Map();
 
   private nextPassengerSeq: number = 1;
+  private nextVehicleSeq: number = 1;
   private dayEndedEmitted: boolean = false;
+  private dynamicAtuEnabled: boolean;
+  private atuSpawnCooldownMin: number = 150;
+  private rivalRebalanceTimerMin: number = 120;
+
   private readonly vehicleContext: VehicleSimulationContext;
 
   constructor(config: WorldSimulationConfig) {
@@ -59,6 +69,7 @@ export class WorldSimulation {
     this.graph = new RoadGraph(config.levelData);
     this.pathfinder = new Pathfinder(this.graph);
     this.economy = new EconomyManager(config.levelData.startingCash, this.eventBus);
+    this.dynamicAtuEnabled = config.enableDynamicAtuCheckpoints ?? false;
 
     for (const node of config.levelData.nodes) {
       if (node.type === 'BUS_STOP') {
@@ -114,24 +125,35 @@ export class WorldSimulation {
       light.tick(deltaSec);
     }
 
-    // 2. Update active ATU checkpoint timers
+    // 2. Update active ATU checkpoint timers & dynamic ATU spawner
     this.updateAtuCheckpoints(elapsedGameMinutes);
 
-    // 3. Spawn new passengers & tick waiting queues at bus stops
+    // 3. Rebalance Rival AI routes periodically toward highest-demand stops
+    this.updateRivalAiRoutes(elapsedGameMinutes);
+
+    // 4. Spawn new passengers & tick waiting queues at bus stops
     this.updateBusStops(deltaSec);
 
-    // 4. Update all vehicles via their Finite State Machines
+    // 5. Update all vehicles via their Finite State Machines
     for (const vehicle of this.vehicles.values()) {
       vehicle.update(deltaSec, this.vehicleContext);
     }
 
-    // 5. Emit end-of-day event if 23:00 was reached
+    // 6. Emit end-of-day event if 23:00 was reached
     if (this.clock.isDayOver() && !this.dayEndedEmitted) {
       this.dayEndedEmitted = true;
       this.eventBus.emit('clock:day-ended', {
         dayNumber: this.clock.getDayNumber(),
       });
     }
+  }
+
+  public setDynamicAtuCheckpointsEnabled(enabled: boolean): void {
+    this.dynamicAtuEnabled = enabled;
+  }
+
+  public isDynamicAtuCheckpointsEnabled(): boolean {
+    return this.dynamicAtuEnabled;
   }
 
   /**
@@ -182,12 +204,138 @@ export class WorldSimulation {
     return vehicle;
   }
 
+  /**
+   * Purchases a new player-owned vehicle and assigns it to the given route ID.
+   */
+  public purchasePlayerVehicle(
+    archetype: VehicleArchetype,
+    routeId: string,
+  ): VehicleAgent | null {
+    const route = this.routes.get(routeId) ?? this.getAllRoutes()[0];
+    if (!route) {
+      return null;
+    }
+    const id = `player_${archetype.id}_${this.nextVehicleSeq++}`;
+    return this.addVehicle({
+      id,
+      archetype,
+      route,
+      isPlayerOwned: true,
+      purchaseVehicle: true,
+    });
+  }
+
+  /**
+   * Hires the "Garganta de Lata" Cobrador upgrade for a player vehicle (-40% boarding time).
+   */
+  public hireCobradorUpgrade(
+    vehicleId: string,
+    cost: number = WorldSimulation.COBRADOR_UPGRADE_COST,
+  ): boolean {
+    const vehicle = this.vehicles.get(vehicleId);
+    if (!vehicle || !vehicle.isPlayerOwned || vehicle.hasCobrador()) {
+      return false;
+    }
+    const paid = this.economy.spendCapital(cost, 'UPGRADE');
+    if (!paid) {
+      return false;
+    }
+    vehicle.setCobradorUpgrade(true);
+    return true;
+  }
+
+  /**
+   * Toggles "Correteo" (+30% speed boost when overtaking rival vehicles) across all player vehicles.
+   */
+  public setFleetCorreteo(enabled: boolean): void {
+    for (const vehicle of this.getPlayerVehicles()) {
+      vehicle.setCorreteoEnabled(enabled);
+    }
+  }
+
+  /**
+   * Evaluates all BusStopNodes by current waiting queue + base spawn rate to construct
+   * a competitive route targeting the highest-demand stops on the avenue.
+   */
+  public computeHighestDemandRoute(routeId: string = 'route_rival_ai'): RouteDefinition | null {
+    const allStops = this.getAllBusStops();
+    if (allStops.length < 2) {
+      return null;
+    }
+
+    // Score each stop by current queue pressure + base demand rate
+    const scored = [...allStops].sort((a, b) => {
+      const scoreA = a.getQueueLength() * 3 + a.baseSpawnRatePerMin;
+      const scoreB = b.getQueueLength() * 3 + b.baseSpawnRatePerMin;
+      return scoreB - scoreA;
+    });
+
+    const topStopSet = new Set(
+      scored.slice(0, Math.min(3, scored.length)).map((s) => s.id),
+    );
+
+    // Keep corridor stop ordering so directed paths exist between consecutive stops
+    const orderedStops = allStops
+      .filter((s) => topStopSet.has(s.id))
+      .map((s) => s.id);
+
+    if (orderedStops.length < 2) {
+      return null;
+    }
+
+    const roundTrip: StopId[] = [...orderedStops];
+    for (let i = orderedStops.length - 2; i >= 0; i--) {
+      roundTrip.push(orderedStops[i]!);
+    }
+
+    return {
+      id: routeId,
+      name: 'Línea Pirata Rival',
+      color: '#a855f7',
+      stopIds: roundTrip,
+      evadeAtuCheckpoints: true,
+    };
+  }
+
+  /**
+   * Spawns a Rival AI Combi that competes for passengers at the highest-demand stops.
+   */
+  public spawnRivalCombi(
+    archetype: VehicleArchetype,
+    customId?: string,
+  ): VehicleAgent | null {
+    const rivalRoute = this.computeHighestDemandRoute();
+    if (!rivalRoute) {
+      return null;
+    }
+    const id = customId ?? `rival_${this.nextVehicleSeq++}`;
+    const rival = this.addVehicle({
+      id,
+      archetype,
+      route: rivalRoute,
+      isPlayerOwned: false,
+      purchaseVehicle: false,
+    });
+    if (rival) {
+      rival.setCorreteoEnabled(true);
+    }
+    return rival;
+  }
+
   public getVehicle(vehicleId: string): VehicleAgent | undefined {
     return this.vehicles.get(vehicleId);
   }
 
   public getAllVehicles(): VehicleAgent[] {
     return Array.from(this.vehicles.values());
+  }
+
+  public getPlayerVehicles(): VehicleAgent[] {
+    return Array.from(this.vehicles.values()).filter((v) => v.isPlayerOwned);
+  }
+
+  public getRivalVehicles(): VehicleAgent[] {
+    return Array.from(this.vehicles.values()).filter((v) => !v.isPlayerOwned);
   }
 
   public getBusStop(stopId: StopId): BusStopNode | undefined {
@@ -205,7 +353,10 @@ export class WorldSimulation {
   /**
    * Spawns a temporary ATU checkpoint on the specified edge for durationGameMinutes (default 180 = 3 in-game hours).
    */
-  public spawnAtuCheckpoint(edgeId: string, durationGameMinutes: number = 180): void {
+  public spawnAtuCheckpoint(
+    edgeId: string,
+    durationGameMinutes: number = WorldSimulation.ATU_CHECKPOINT_DURATION_MIN,
+  ): void {
     this.graph.setAtuCheckpoint(edgeId, true);
     this.activeAtuTimersMin.set(edgeId, durationGameMinutes);
     this.eventBus.emit('atu:checkpoint-spawned', {
@@ -245,6 +396,40 @@ export class WorldSimulation {
         this.clearAtuCheckpoint(edgeId);
       } else {
         this.activeAtuTimersMin.set(edgeId, nextRemaining);
+      }
+    }
+
+    if (this.dynamicAtuEnabled) {
+      this.atuSpawnCooldownMin -= elapsedGameMinutes;
+      if (this.atuSpawnCooldownMin <= 0) {
+        this.atuSpawnCooldownMin = WorldSimulation.ATU_SPAWN_INTERVAL_MIN;
+        const mainAvenueEdges = this.graph
+          .getAllEdges()
+          .filter((e) => !e.isAuxiliary && !this.graph.hasAtuCheckpoint(e.id));
+        if (mainAvenueEdges.length > 0) {
+          const chosenEdge = this.random.pick(mainAvenueEdges);
+          this.spawnAtuCheckpoint(
+            chosenEdge.id,
+            WorldSimulation.ATU_CHECKPOINT_DURATION_MIN,
+          );
+        }
+      }
+    }
+  }
+
+  private updateRivalAiRoutes(elapsedGameMinutes: number): void {
+    if (elapsedGameMinutes <= 0 || this.getRivalVehicles().length === 0) {
+      return;
+    }
+    this.rivalRebalanceTimerMin -= elapsedGameMinutes;
+    if (this.rivalRebalanceTimerMin <= 0) {
+      this.rivalRebalanceTimerMin = 120;
+      const updatedRoute = this.computeHighestDemandRoute();
+      if (updatedRoute) {
+        this.registerRoute(updatedRoute);
+        for (const rival of this.getRivalVehicles()) {
+          rival.setRoute(updatedRoute);
+        }
       }
     }
   }
@@ -291,7 +476,6 @@ export class WorldSimulation {
     const destNode = this.graph.getNode(destinationStopId);
     const originNode = originStop.node;
 
-    // Estimate travel distance between origin and destination stops
     const path = this.pathfinder.findShortestPath(originStop.id, destinationStopId);
     const distanceMeters = path
       ? path.totalDistanceMeters
