@@ -1,0 +1,35 @@
+[
+  {
+    "id": "combi_pirata",
+    "name": "Combi 'El Rápido'",
+    "cost": 250,
+    "capacity": 16,
+    "speedMultiplier": 1.25,
+    "boardingSecondsPerPassenger": 1.2,
+    "fuelCostPerKm": 0.45,
+    "hasLegalPermit": false,
+    "atuFineAmount": 120
+  },
+  {
+    "id": "custer_chicha",
+    "name": "Cúster 'Chosicano Style'",
+    "cost": 550,
+    "capacity": 32,
+    "speedMultiplier": 1.1,
+    "boardingSecondsPerPassenger": 1.0,
+    "fuelCostPerKm": 0.70,
+    "hasLegalPermit": true,
+    "atuFineAmount": 0
+  },
+  {
+    "id": "corredor_azul",
+    "name": "Bus Patrón Formal",
+    "cost": 1200,
+    "capacity": 65,
+    "speedMultiplier": 0.95,
+    "boardingSecondsPerPassenger": 0.6,
+    "fuelCostPerKm": 0.55,
+    "hasLegalPermit": true,
+    "atuFineAmount": 0
+  }
+]
